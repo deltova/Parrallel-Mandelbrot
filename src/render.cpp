@@ -172,6 +172,7 @@ void render_mt(std::byte* buffer,
                int n_iterations)
 {
   int histo[n_iterations];
+  std::mutex mutex;
   memset(histo, 0, n_iterations * sizeof(int));
   int iter_history[width * height];
   auto inner_loop_history = [&](int y) {
@@ -189,11 +190,14 @@ void render_mt(std::byte* buffer,
             x_float = xtemp;
             iter++;
         }
-        histo[iter]++;
+        {
+            std::lock_guard<std::mutex> lk(mutex);
+            histo[iter]++;
+        }
         iter_history[y * width + x] = iter;
     }
   };
- /* for (int i = 0; i < height / 2 + 1; ++i)
+  /*for (int i = 0; i < height / 2 + 1; ++i)
     inner_loop_history(i);*/
   tbb::parallel_for(0, height / 2 + 1, 1, inner_loop_history);
 
@@ -225,5 +229,5 @@ void render_mt(std::byte* buffer,
     }
   };
   tbb::parallel_for(0, height / 2  + 1, 1, inner_loop);
-  //for (auto toto = 0; toto < height; ++toto) inner_loop(toto);
+  //for (auto toto = 0; toto < height / 2 + 1; ++toto) inner_loop(toto);
 }
