@@ -1,5 +1,6 @@
 #include "render.hpp"
 #include <mmintrin.h>
+#include <atomic>
 #include <pmmintrin.h>
 #include <immintrin.h>
 #include "tbb/parallel_for.h"
@@ -171,48 +172,50 @@ void render_mt(std::byte* buffer,
                std::ptrdiff_t stride,
                int n_iterations)
 {
-  int histo[n_iterations];
-  std::mutex mutex;
-  memset(histo, 0, n_iterations * sizeof(int));
+  std::atomic<int> histo_ato[n_iterations];
+  for (int i = 0; i < n_iterations; ++i)
+    histo_ato[i].store(0, std::memory_order_relaxed);
   int iter_history[width * height];
   auto inner_loop_history = [&](int y) {
     for (int x = 0; x < width; ++x)
     {
-        float x0 = -2.5 + (((float)x / ((float)width - 1)) * 3.5);
-        float y0 = -1.0 + (((float)y / (float)(height - 1)) * 2.0);
-        float x_float= 0.0;
-        float y_float = 0.0;
+        auto x0 = load_float_256(x, width);
+        auto y0 = y_load_float_256(y, height);
+        auto x_float = load_single_float(0.0);
+        auto y_float = load_single_float(0.0);
+        auto iterations = load_single_int(0);
         int iter = 0;
-        while (x_float * x_float + y_float * y_float < 4.0 && iter < n_iterations)
+        for (; iter < n_iterations; ++iter)
         {
-            float xtemp = x_float * x_float - y_float * y_float + x0;
+            auto xtemp = x_float * x_float - y_float * y_float + x0;
             y_float = 2.0 * x_float * y_float + y0;
             x_float = xtemp;
-            iter++;
+            auto calc_cond = x_float * x_float + y_float * y_float;
+            auto compar = load_single_float(4.0);
+            auto mask = _mm256_cmp_ps(calc_cond,  compar, _CMP_LT_OQ);
+            if (!_mm256_movemask_ps(mask))
+                break;
+            iterations = _mm256_blendv_ps(iterations, iterations +
+            load_single_float(1), mask);
         }
+        for (int i = 0; i < 8; ++i)
         {
-            std::lock_guard<std::mutex> lk(mutex);
-            histo[iter]++;
+            histo_ato[(int)iterations[i]].fetch_add(1, std::memory_order_relaxed);;
+            iter_history[y * width + (x + i)] = iterations[i];
         }
-        iter_history[y * width + x] = iter;
     }
   };
   /*for (int i = 0; i < height / 2 + 1; ++i)
     inner_loop_history(i);*/
   tbb::parallel_for(0, height / 2 + 1, 1, inner_loop_history);
-
-  int total =  tbb::parallel_reduce(
-        tbb::blocked_range<int*>( histo, histo + n_iterations),
-        0,
-        [](const tbb::blocked_range<int*>& r, int init)->int {
-            for( int* a=r.begin(); a!=r.end(); ++a )
-                init += *a;
-            return init;
-        },
-        []( int x, int y )->int {
-            return x+y;
-        }
-  );
+  int histo[n_iterations];
+  int total = 0;
+  auto accumulate = [&](int i){
+    auto str = histo_ato[i].load(std::memory_order_relaxed);
+    histo[i] = str;
+    total += str;
+  };
+  tbb::parallel_for(0, n_iterations, 1, accumulate);
   auto inner_loop = [&](int y)
   {
     for (int x = 0; x < width; ++x)
