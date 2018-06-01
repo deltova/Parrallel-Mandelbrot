@@ -170,7 +170,9 @@ void render(std::byte* buffer,
     max_y++;
   int histo[n_iterations];
   memset(histo, 0, n_iterations * sizeof(int));
-  int iter_history[width * height];
+  //int iter_history[width * height];
+  std::vector<int> iter_history(width * height);
+  //iter_history[0] = 0;
 
   //calculate every iteration
   for (int y = 0; y < max_y; ++y)
@@ -246,25 +248,25 @@ void render_mt(std::byte* buffer,
   std::atomic<int> histo_ato[n_iterations];
   for (int i = 0; i < n_iterations; ++i)
     histo_ato[i].store(0, std::memory_order_relaxed);
-  int iter_history[width * height];
+  std::vector<int> iter_history(width * height);
   auto inner_loop_history = [&](int y) {
     for (int x = 0; x < width; x += 8)
     {
         auto x0 = load_float_256(x, width);
         auto y0 = y_load_float_256(y, height);
-        auto x_float = load_single_float(0.0);
-        auto y_float = load_single_float(0.0);
+        auto x_float = _mm256_set1_ps(0.0);
+        auto y_float = _mm256_set1_ps(0.0);
         auto iterations = load_single_int(0);
         int iter = 0;
         for (; iter < n_iterations; ++iter)
         {
             auto calc_cond = x_float * x_float + y_float * y_float;
-            auto compar = load_single_float(4.0);
+            auto compar = _mm256_set1_ps(4.0);
             auto mask = _mm256_cmp_ps(calc_cond,  compar, _CMP_LT_OQ);
             if (!_mm256_movemask_ps(mask))
                 break;
             iterations = _mm256_blendv_ps(iterations, iterations +
-            load_single_float(1), mask);
+            _mm256_set1_ps(1), mask);
             auto xtemp = x_float * x_float - y_float * y_float + x0;
             y_float = 2.0 * x_float * y_float + y0;
             x_float = xtemp;
